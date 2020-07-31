@@ -257,7 +257,7 @@ IoT_Error_t aws_iot_shadow_delete(AWS_IoT_Client *pClient, const char *pThingNam
  * @param pStruct The struct used to parse JSON value
  * @return An IoT Error Type defining successful/failed delta registering
  */
-IoT_Error_t aws_iot_shadow_register_delta(AWS_IoT_Client *pClient, jsonStruct_t *pStruct);
+IoT_Error_t aws_iot_shadow_register_delta(AWS_IoT_Client *pClient, const char *pShadowName, jsonStruct_t *pStruct);
 
 /**
  * @brief Reset the last received version number to zero.

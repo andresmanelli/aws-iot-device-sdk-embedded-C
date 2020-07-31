@@ -49,6 +49,7 @@ typedef struct {
 	void *pStruct;
 	jsonStructCallback_t callback;
 	bool isFree;
+	const char *pShadowName;
 } JsonTokenTable_t;
 
 typedef struct {
@@ -59,8 +60,13 @@ typedef struct {
 } SubscriptionRecord_t;
 
 typedef enum {
-	SHADOW_ACCEPTED, SHADOW_REJECTED, SHADOW_ACTION
+	SHADOW_ACCEPTED, SHADOW_REJECTED, SHADOW_DELTA, SHADOW_ACTION
 } ShadowAckTopicTypes_t;
+
+typedef struct {
+	char shadowName[MAX_SIZE_OF_SHADOW_NAME];
+	bool deltaTopicSubscribedFlag;
+} ShadowDeltaSubscribedMap_t;
 
 ToBeReceivedAckRecord_t AckWaitList[MAX_ACKS_TO_COMEIN_AT_ANY_GIVEN_TIME];
 
@@ -69,7 +75,7 @@ AWS_IoT_Client *pMqttClient;
 char myThingName[MAX_SIZE_OF_THING_NAME];
 char mqttClientID[MAX_SIZE_OF_UNIQUE_CLIENT_ID_BYTES];
 
-char shadowDeltaTopic[MAX_SHADOW_TOPIC_LENGTH_BYTES];
+char shadowDeltaTopics[MAX_NUMBER_OF_SHADOWS][MAX_SHADOW_TOPIC_LENGTH_BYTES] = {0};
 
 #define MAX_TOPICS_AT_ANY_GIVEN_TIME 2*MAX_THINGNAME_HANDLED_AT_ANY_GIVEN_TIME
 SubscriptionRecord_t SubscriptionList[MAX_TOPICS_AT_ANY_GIVEN_TIME];
@@ -79,11 +85,13 @@ char shadowRxBuf[SHADOW_MAX_SIZE_OF_RX_BUFFER];
 
 static JsonTokenTable_t tokenTable[MAX_JSON_TOKEN_EXPECTED];
 static uint32_t tokenTableIndex = 0;
-static bool deltaTopicSubscribedFlag = false;
-uint32_t shadowJsonVersionNum = 0;
+static ShadowDeltaSubscribedMap_t deltaTopicSubscribedFlags[MAX_NUMBER_OF_SHADOWS] = {0};
+uint32_t shadowJsonVersionNum[MAX_NUMBER_OF_SHADOWS] = {0};
 bool shadowDiscardOldDeltaFlag = true;
 
 // local helper functions
+static bool isDeltaTopicSubscribed(const char *pShadowName, int8_t *shadowIndex);
+
 static void AckStatusCallback(AWS_IoT_Client *pClient, char *topicName,
 							  uint16_t topicNameLen, IoT_Publish_Message_Params *params, void *pData);
 
@@ -103,18 +111,26 @@ void initDeltaTokens(void) {
 		tokenTable[i].isFree = true;
 	}
 	tokenTableIndex = 0;
-	deltaTopicSubscribedFlag = false;
+	memset(deltaTopicSubscribedFlags, 0, MAX_NUMBER_OF_SHADOWS * sizeof(ShadowDeltaSubscribedMap_t));
 }
 
-IoT_Error_t registerJsonTokenOnDelta(jsonStruct_t *pStruct) {
+IoT_Error_t registerJsonTokenOnDelta(const char *pShadowName, jsonStruct_t *pStruct) {
 
 	IoT_Error_t rc = SUCCESS;
+	int8_t shadowIndex = -1;
 
-	if(!deltaTopicSubscribedFlag) {
-		snprintf(shadowDeltaTopic, MAX_SHADOW_TOPIC_LENGTH_BYTES, "$aws/things/%s/shadow/update/delta", myThingName);
-		rc = aws_iot_mqtt_subscribe(pMqttClient, shadowDeltaTopic, (uint16_t) strlen(shadowDeltaTopic), QOS0,
+	if(! isDeltaTopicSubscribed(pShadowName, &shadowIndex) ) {
+		if ( shadowIndex < 0 ) {
+			return FAILURE;
+		}
+		topicNameFromThingAndAction(shadowDeltaTopics[shadowIndex], myThingName, pShadowName, SHADOW_UPDATE, SHADOW_DELTA);
+		rc = aws_iot_mqtt_subscribe(pMqttClient, shadowDeltaTopics[shadowIndex], (uint16_t) strlen(shadowDeltaTopics[shadowIndex]), QOS0,
 									shadow_delta_callback, NULL);
-		deltaTopicSubscribedFlag = true;
+		// Only copy shadow name if not classic shadow
+		if ( shadowIndex > 0 ) {
+			strncpy(deltaTopicSubscribedFlags[shadowIndex].shadowName, pShadowName, MAX_SIZE_OF_SHADOW_NAME);
+		}
+		deltaTopicSubscribedFlags[shadowIndex].deltaTopicSubscribedFlag = true;
 	}
 
 	if(tokenTableIndex >= MAX_JSON_TOKEN_EXPECTED) {
@@ -125,6 +141,7 @@ IoT_Error_t registerJsonTokenOnDelta(jsonStruct_t *pStruct) {
 	tokenTable[tokenTableIndex].callback = pStruct->cb;
 	tokenTable[tokenTableIndex].pStruct = pStruct;
 	tokenTable[tokenTableIndex].isFree = false;
+	tokenTable[tokenTableIndex].pShadowName = deltaTopicSubscribedFlags[shadowIndex].shadowName;
 	tokenTableIndex++;
 
 	return rc;
@@ -159,6 +176,8 @@ static void topicNameFromThingAndAction(char *pTopic, const char *pThingName, co
 		strncpy(ackTypeBuf, "accepted", 10);
 	} else if(SHADOW_REJECTED == ackType) {
 		strncpy(ackTypeBuf, "rejected", 10);
+	} else if(SHADOW_DELTA == ackType) {
+		strncpy(ackTypeBuf, "delta", 10);
 	}
 
 	if ( NULL == pShadowName || 0 == strlen(pShadowName) ) {
@@ -195,6 +214,10 @@ static void AckStatusCallback(AWS_IoT_Client *pClient, char *topicName, uint16_t
 	uint8_t i;
 	void *pJsonHandler = NULL;
 	char temporaryClientToken[MAX_SIZE_CLIENT_TOKEN_CLIENT_SEQUENCE];
+	char * nameMatchStart = NULL;
+	char * nameMatchEnd = NULL;
+	char shadowName[MAX_SIZE_OF_SHADOW_NAME] = {0};
+	int8_t shadowIndex = -1;
 
 	IOT_UNUSED(pClient);
 	IOT_UNUSED(topicNameLen);
@@ -213,11 +236,28 @@ static void AckStatusCallback(AWS_IoT_Client *pClient, char *topicName, uint16_t
 		return;
 	}
 
+	nameMatchStart = strnstr(topicName, "shadow/name/", topicNameLen);
+	nameMatchEnd = strnstr(topicName, "/update", topicNameLen);
+	if ( NULL != nameMatchStart && NULL != nameMatchEnd ) {
+		// Shadow name found
+		strncpy(shadowName, nameMatchStart + 12, nameMatchEnd - nameMatchStart - 12);
+	} else if ( NULL == nameMatchStart && NULL != nameMatchEnd ) {
+	} else {
+		// Topic name error
+		IOT_WARN("Unknown topic name format");
+		return;
+	}
+
+	isDeltaTopicSubscribed(shadowName, &shadowIndex);
+	if ( shadowIndex < 0 ) {
+		IOT_WARN("Unknown shadow");
+		return;
+	}
 	if(isValidShadowVersionUpdate(topicName)) {
 		uint32_t tempVersionNumber = 0;
 		if(extractVersionNumber(shadowRxBuf, pJsonHandler, tokenCount, &tempVersionNumber)) {
-			if(tempVersionNumber > shadowJsonVersionNum) {
-				shadowJsonVersionNum = tempVersionNumber;
+			if(tempVersionNumber > shadowJsonVersionNum[shadowIndex]) {
+				shadowJsonVersionNum[shadowIndex] = tempVersionNumber;
 			}
 		}
 	}
@@ -494,11 +534,15 @@ static void shadow_delta_callback(AWS_IoT_Client *pClient, char *topicName,
 	int32_t DataPosition;
 	uint32_t dataLength;
 	uint32_t tempVersionNumber = 0;
+	char * nameMatchStart = NULL;
+	char * nameMatchEnd = NULL;
+	char shadowName[MAX_SIZE_OF_SHADOW_NAME] = {0};
+	bool classicShadow = false;
+	int8_t shadowIndex = -1;
 
 	FUNC_ENTRY;
 
 	IOT_UNUSED(pClient);
-	IOT_UNUSED(topicName);
 	IOT_UNUSED(topicNameLen);
 	IOT_UNUSED(pData);
 
@@ -515,20 +559,43 @@ static void shadow_delta_callback(AWS_IoT_Client *pClient, char *topicName,
 		return;
 	}
 
+	nameMatchStart = strnstr(topicName, "shadow/name/", topicNameLen);
+	nameMatchEnd = strnstr(topicName, "/update/delta", topicNameLen);
+	if ( NULL != nameMatchStart && NULL != nameMatchEnd ) {
+		// Shadow name found
+		strncpy(shadowName, nameMatchStart + 12, nameMatchEnd - nameMatchStart - 12);
+		IOT_DEBUG("Shadow name found: %s", shadowName);
+	} else if ( NULL == nameMatchStart && NULL != nameMatchEnd ) {
+		IOT_DEBUG("Using classic shadow delta");
+		classicShadow = true;
+	} else {
+		// Topic name error
+		IOT_WARN("Unknown topic name format");
+		return;
+	}
+
+	isDeltaTopicSubscribed(shadowName, &shadowIndex);
+	if ( shadowIndex < 0 ) {
+		IOT_WARN("Unknown shadow");
+		return;
+	}
+
 	if(shadowDiscardOldDeltaFlag) {
 		if(extractVersionNumber(shadowRxBuf, pJsonHandler, tokenCount, &tempVersionNumber)) {
-			if(tempVersionNumber > shadowJsonVersionNum) {
-				shadowJsonVersionNum = tempVersionNumber;
+			if(tempVersionNumber > shadowJsonVersionNum[shadowIndex]) {
+				shadowJsonVersionNum[shadowIndex] = tempVersionNumber;
 			} else {
 				IOT_WARN("Old Delta Message received - Ignoring rx: %d local: %d", tempVersionNumber,
-						 shadowJsonVersionNum);
+						 shadowJsonVersionNum[shadowIndex]);
 				return;
 			}
 		}
 	}
 
 	for(i = 0; i < tokenTableIndex; i++) {
-		if(!tokenTable[i].isFree) {
+		if( ( classicShadow && ( strnlen(tokenTable[i].pShadowName, MAX_SIZE_OF_SHADOW_NAME) == 0 ) && !tokenTable[i].isFree ) ||
+		    ( !classicShadow && ( 0 == strncmp(shadowName, tokenTable[i].pShadowName, strlen(shadowName)) ) && !tokenTable[i].isFree ) ) {
+
 			if(isJsonKeyMatchingAndUpdateValue(shadowRxBuf, pJsonHandler, tokenCount,
 											   (jsonStruct_t *) tokenTable[i].pStruct, &dataLength, &DataPosition)) {
 				if(tokenTable[i].callback != NULL) {
@@ -538,6 +605,33 @@ static void shadow_delta_callback(AWS_IoT_Client *pClient, char *topicName,
 			}
 		}
 	}
+}
+
+static bool isDeltaTopicSubscribed(const char *pShadowName, int8_t *shadowIndex)
+{
+	uint8_t i = 0;
+
+	// Classic shadow is always at index 0
+	if ( NULL == pShadowName || ( 0 == strnlen(pShadowName, MAX_SIZE_OF_SHADOW_NAME)) ) {
+		*shadowIndex = 0;
+		return deltaTopicSubscribedFlags[0].deltaTopicSubscribedFlag;
+	}
+
+	for ( i = 1; i < MAX_NUMBER_OF_SHADOWS; i++ ) {
+		if ( 0 == strncmp(pShadowName, deltaTopicSubscribedFlags[i].shadowName, MAX_SIZE_OF_SHADOW_NAME) ) {
+			*shadowIndex = i;
+			return deltaTopicSubscribedFlags[i].deltaTopicSubscribedFlag;
+		}
+		// If the name is empty, there are no other shadow names
+		if ( 0 == deltaTopicSubscribedFlags[i].shadowName[0] ) {
+			*shadowIndex = i;
+			return false;
+		}
+	}
+
+	// List is full
+	*shadowIndex = -1;
+	return false;
 }
 
 #ifdef __cplusplus

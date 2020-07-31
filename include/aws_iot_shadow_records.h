@@ -26,7 +26,7 @@ extern "C" {
 #include "aws_iot_config.h"
 
 
-extern uint32_t shadowJsonVersionNum;
+extern uint32_t shadowJsonVersionNum[MAX_NUMBER_OF_SHADOWS];
 extern bool shadowDiscardOldDeltaFlag;
 
 extern char myThingName[MAX_SIZE_OF_THING_NAME];
@@ -46,7 +46,7 @@ void addToAckWaitList(uint8_t indexAckWaitList, const char *pThingName, const ch
 bool getNextFreeIndexOfAckWaitList(uint8_t *pIndex);
 void HandleExpiredResponseCallbacks(void);
 void initDeltaTokens(void);
-IoT_Error_t registerJsonTokenOnDelta(jsonStruct_t *pStruct);
+IoT_Error_t registerJsonTokenOnDelta(const char *pShadowName, jsonStruct_t *pStruct);
 
 #ifdef __cplusplus
 }

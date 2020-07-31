@@ -41,11 +41,11 @@ const ShadowConnectParameters_t ShadowConnectParametersDefault = {(char *) AWS_I
 static char deleteAcceptedTopic[MAX_SHADOW_TOPIC_LENGTH_BYTES];
 
 void aws_iot_shadow_reset_last_received_version(void) {
-	shadowJsonVersionNum = 0;
+	memset(shadowJsonVersionNum, 0, sizeof(shadowJsonVersionNum));
 }
 
 uint32_t aws_iot_shadow_get_last_received_version(void) {
-	return shadowJsonVersionNum;
+	return shadowJsonVersionNum[0];
 }
 
 void aws_iot_shadow_enable_discard_old_delta_msgs(void) {
@@ -146,7 +146,7 @@ IoT_Error_t aws_iot_shadow_connect(AWS_IoT_Client *pClient, const ShadowConnectP
 	FUNC_EXIT_RC(rc);
 }
 
-IoT_Error_t aws_iot_shadow_register_delta(AWS_IoT_Client *pMqttClient, jsonStruct_t *pStruct) {
+IoT_Error_t aws_iot_shadow_register_delta(AWS_IoT_Client *pMqttClient, const char *pShadowName, jsonStruct_t *pStruct) {
 	if(NULL == pMqttClient || NULL == pStruct) {
 		return NULL_VALUE_ERROR;
 	}
@@ -155,7 +155,7 @@ IoT_Error_t aws_iot_shadow_register_delta(AWS_IoT_Client *pMqttClient, jsonStruc
 		return MQTT_CONNECTION_ERROR;
 	}
 
-	return registerJsonTokenOnDelta(pStruct);
+	return registerJsonTokenOnDelta(pShadowName, pStruct);
 }
 
 IoT_Error_t aws_iot_shadow_yield(AWS_IoT_Client *pClient, uint32_t timeout) {
