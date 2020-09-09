@@ -119,6 +119,10 @@ IoT_Error_t registerJsonTokenOnDelta(const char *pShadowName, jsonStruct_t *pStr
 	IoT_Error_t rc = SUCCESS;
 	int8_t shadowIndex = -1;
 
+	if(tokenTableIndex >= MAX_JSON_TOKEN_EXPECTED) {
+		return FAILURE;
+	}
+
 	if(! isDeltaTopicSubscribed(pShadowName, &shadowIndex) ) {
 		if ( shadowIndex < 0 ) {
 			return FAILURE;
@@ -131,10 +135,6 @@ IoT_Error_t registerJsonTokenOnDelta(const char *pShadowName, jsonStruct_t *pStr
 			strncpy(deltaTopicSubscribedFlags[shadowIndex].shadowName, pShadowName, MAX_SIZE_OF_SHADOW_NAME);
 		}
 		deltaTopicSubscribedFlags[shadowIndex].deltaTopicSubscribedFlag = true;
-	}
-
-	if(tokenTableIndex >= MAX_JSON_TOKEN_EXPECTED) {
-		return FAILURE;
 	}
 
 	tokenTable[tokenTableIndex].pKey = pStruct->pKey;
