@@ -83,7 +83,7 @@ SubscriptionRecord_t SubscriptionList[MAX_TOPICS_AT_ANY_GIVEN_TIME];
 #define SUBSCRIBE_SETTLING_TIME 2
 char shadowRxBuf[SHADOW_MAX_SIZE_OF_RX_BUFFER];
 
-static JsonTokenTable_t tokenTable[MAX_JSON_TOKEN_EXPECTED];
+static JsonTokenTable_t tokenTable[MAX_NUMBER_OF_DELTAS];
 static uint32_t tokenTableIndex = 0;
 static ShadowDeltaSubscribedMap_t deltaTopicSubscribedFlags[MAX_NUMBER_OF_SHADOWS] = {0};
 uint32_t shadowJsonVersionNum[MAX_NUMBER_OF_SHADOWS] = {0};
@@ -107,7 +107,7 @@ static void unsubscribeFromAcceptedAndRejected(uint8_t index);
 
 void initDeltaTokens(void) {
 	uint32_t i;
-	for(i = 0; i < MAX_JSON_TOKEN_EXPECTED; i++) {
+	for(i = 0; i < MAX_NUMBER_OF_DELTAS; i++) {
 		tokenTable[i].isFree = true;
 	}
 	tokenTableIndex = 0;
@@ -119,7 +119,7 @@ IoT_Error_t registerJsonTokenOnDelta(const char *pShadowName, jsonStruct_t *pStr
 	IoT_Error_t rc = SUCCESS;
 	int8_t shadowIndex = -1;
 
-	if(tokenTableIndex >= MAX_JSON_TOKEN_EXPECTED) {
+	if(tokenTableIndex >= MAX_NUMBER_OF_DELTAS) {
 		return FAILURE;
 	}
 
